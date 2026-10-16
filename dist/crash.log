@@ -1,0 +1,45 @@
+--- 2026-10-10 19:13:11 ---
+Traceback (most recent call last):
+  File "digipet.py", line 1870, in move_loop
+  File "digipet.py", line 1885, in roam_step
+  File "digipet.py", line 1720, in work_area
+  File "digipet.py", line 1620, in hwnd
+  File "tkinter\__init__.py", line 1158, in winfo_id
+_tkinter.TclError: can't invoke "winfo" command: application has been destroyed
+
+--- 2026-10-11 23:11:09 ---
+Traceback (most recent call last):
+  File "digipet.py", line 1897, in move_loop
+  File "digipet.py", line 1912, in roam_step
+  File "digipet.py", line 1740, in work_area
+  File "digipet.py", line 1640, in hwnd
+  File "tkinter\__init__.py", line 1158, in winfo_id
+_tkinter.TclError: can't invoke "winfo" command: application has been destroyed
+
+--- 2026-10-12 19:20:47 ---
+Traceback (most recent call last):
+  File "digipet.py", line 1902, in move_loop
+  File "digipet.py", line 1917, in roam_step
+  File "digipet.py", line 1743, in work_area
+  File "digipet.py", line 1643, in hwnd
+  File "tkinter\__init__.py", line 1158, in winfo_id
+_tkinter.TclError: can't invoke "winfo" command: application has been destroyed
+
+--- 2026-10-13 21:23:05 ---
+Traceback (most recent call last):
+  File "digipet.py", line 2063, in move_loop
+  File "digipet.py", line 2078, in roam_step
+  File "digipet.py", line 1882, in work_area
+  File "digipet.py", line 1782, in hwnd
+  File "tkinter\__init__.py", line 1158, in winfo_id
+_tkinter.TclError: can't invoke "winfo" command: application has been destroyed
+
+--- 2026-10-14 14:17:09 ---
+Traceback (most recent call last):
+  File "digipet.py", line 2063, in move_loop
+  File "digipet.py", line 2078, in roam_step
+  File "digipet.py", line 1882, in work_area
+  File "digipet.py", line 1782, in hwnd
+  File "tkinter\__init__.py", line 1158, in winfo_id
+_tkinter.TclError: can't invoke "winfo" command: application has been destroyed
+
