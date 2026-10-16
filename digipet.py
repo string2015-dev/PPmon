@@ -1471,6 +1471,26 @@ class Game:
         if res in ("win", "captured"):
             self.roll_drops(ab)
 
+    def reset_all(self):
+        """전체 초기화: 진행 데이터를 모두 지우고 1세대 새 알로 처음부터 (창 위치 등 설정은 유지).
+        실수에 대비해 직전 저장을 save.json.reset-backup 으로 한 부 남김(다음 초기화 때 덮어씀)."""
+        try:
+            if os.path.exists(SAVE):
+                shutil.copyfile(SAVE, SAVE + ".reset-backup")
+            for f in (SAVE, SAVE + ".bak"):
+                if os.path.exists(f):
+                    os.remove(f)
+        except OSError:
+            pass
+        self.s = new_state()
+        self.active_battle = None
+        self.evo_pending = self.evo_ok = None
+        self.up_t = 0.0
+        self.fx.clear()
+        self.log.clear()
+        self.say("모든 데이터를 초기화했다. 새 알을 받았다!")
+        self.save()
+
     def reincarnate(self):
         s = self.s
         # 훈련 수치(힘/속도/지능)·경험치·돌 등은 새로 시작(리셋). Bits·도감·가방·강화(영구)는 유지
@@ -1695,6 +1715,7 @@ class App:
         m.add_command(label="하이퍼볼 던지기", command=lambda: g.throw_ball("ultra"))
         m.add_separator()
         m.add_command(label="새 알로 환생", command=self.reincarnate)
+        m.add_command(label="전체 초기화 (모든 데이터 삭제)", command=self.reset_game)
         m.add_command(label="저장 후 종료", command=self.quit)
         self.menu = m
         self.root.bind("<Button-3>", lambda e: self.menu.tk_popup(e.x_root, e.y_root))
@@ -2214,6 +2235,22 @@ class App:
     def show_stats(self):
         self.page = "stats"
         self.show_mode(False)
+
+    def reset_game(self):
+        """설정 → 전체 초기화: 두 번 확인한 뒤 모든 진행 데이터를 지우고 처음부터 시작."""
+        if not messagebox.askyesno("전체 초기화", "모든 데이터를 지우고 처음부터 시작할까요?\n\n"
+                                   "지워지는 것: 펫, Bits, 도감, 가방, 영구 강화, 세대, 전적\n"
+                                   "(창 위치·투명도 같은 설정은 유지돼요)", icon="warning", default="no"):
+            return
+        if not messagebox.askyesno("전체 초기화 - 마지막 확인", "정말 초기화할까요? 되돌릴 수 없어요.\n"
+                                   "(직전 저장은 save.json.reset-backup 으로 한 부 남겨요)", icon="warning", default="no"):
+            return
+        self.close_shop()
+        if self.bw_alive():
+            self.bw.destroy()
+        self.page, self.drop, self.hearts = "main", None, []
+        self.g.reset_all()
+        self.after_new_egg()
 
     def reincarnate(self):
         if messagebox.askyesno("환생", "현재 펫을 보내고 새 알로 시작할까요?\n(Bits · 도감 · 가방 · 강화는 유지돼요)"):
