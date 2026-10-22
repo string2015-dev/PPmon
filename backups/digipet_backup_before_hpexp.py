@@ -102,7 +102,7 @@ TICKET_PRICE = 1500
 DEX_POWER = 0.15   # 도감 1종당 전투력
 LOW_BOND = 15      # 친밀도가 이 값 미만이면 전투 불이익(전투력·경험치 -25%). 새 알의 시작 친밀도도 15
 # 강적: 일정 확률로 등장하는 매우 강한 상대. 강화(전투력)를 올려야 이길 수 있고, 자동 전투는 승산이 낮으면 도망침
-ELITE_CHANCE = {1: 0.08, 2: 0.12, 3: 0.15}   # 단계별 강적 등장 확률(전설 포켓몬은 항상 강적)
+ELITE_CHANCE = {1: 0.14, 2: 0.2, 3: 0.25}   # 단계별 강적 등장 확률(전설 포켓몬은 항상 강적)
 ELITE_MULT = {1: (1.9, 2.5), 2: (2.0, 2.7), 3: (2.2, 3.0)}  # 강적의 강도 배율
 ELITE_FLEE_BELOW = 0.8  # 자동 전투에서 (내 전투력 / 상대 전투력)이 이 값 미만이면 도망
 # 돌: 전투 승리/포획 시 일정 확률로 줍는 아이템 (상점에는 없음)
@@ -114,6 +114,7 @@ STONES = {
 }
 STONE_CAP = {"fire_stone": 3, "water_stone": 3, "thunder_stone": 3, "everstone": 2}  # 종류별 최대 보유 수
 TYPE_STONE = {"fire": "fire_stone", "water": "water_stone", "electric": "thunder_stone"}
+STONE_ONLY = {"raichu": "thunder_stone"}   # 이 형태로는 해당 돌을 써야만 진화 (피카츄 → 라이츄)
 STONE_FORM = {"fire_stone": "flareon", "water_stone": "vaporeon", "thunder_stone": "jolteon"}
 STONE_DROP, STONE_DROP_ELITE = 0.12, 0.35   # 타입이 맞는 적에게서 진화의 돌
 EVER_DROP, EVER_DROP_ELITE = 0.05, 0.20     # 변함없는 돌(모든 적)
@@ -188,8 +189,8 @@ def bg_for_type(typ, names):
 def loss_penalty(res, stage):
     """패배/도망 페널티 (경험치, 성장 시간(초 = 걸음), 친밀도). 도망은 패배의 절반."""
     if res == "fled":
-        return 3 + 2 * stage, 450, 4
-    return 6 + 4 * stage, 900, 8
+        return 3 + 2 * stage, 450, FLEE_BOND_LOSS
+    return 6 + 4 * stage, 900, LOSE_BOND_LOSS
 
 
 def selectable_chain(i):
@@ -213,9 +214,17 @@ def upgrade_effect(key, lv):
             "luck": f"희귀 +{15 * lv}% · 이로치 +{10 * lv}%"}[key]
 
 
-BOND_DRAIN_SEC = 8 * 3600       # 친밀도 100→0 (켜 둔 동안 8시간). 배고픔/병이면 2배 빠름
-OFFLINE_BOND_SEC = 48 * 3600    # 친밀도 100→0 (프로그램을 꺼 둔 동안 48시간)
-PET_GAIN = 3             # 펫을 한 번 클릭할 때 친밀도 증가량
+BOND_DRAIN_PER_MIN = 0.7        # 친밀도 감소 (켜 둔 동안, 전체/미니 모드 공통): 분당 0.7
+BOND_DRAIN_SEC = 100 * 60 / BOND_DRAIN_PER_MIN   # 100→0 걸리는 시간(초) ≈ 2시간 23분
+# 켜 둔 동안 감소 배율: (배고픔 20 미만, 병) → 배고픔만 2배 / 병만 4배 / 둘 다 6배
+BOND_DRAIN_MULT = {(False, False): 1, (True, False): 2, (False, True): 4, (True, True): 6}
+TRAIN_BOND_LOSS = 4             # 훈련 1회
+LOSE_BOND_LOSS, FLEE_BOND_LOSS = 16, 3   # 전투 패배 / 도망
+ENERGY_ITEM_BOND_LOSS = 3       # 기력 회복 아이템을 쓸 때
+OFFLINE_BOND_SEC = 72 * 3600    # 친밀도 100→0 (프로그램을 꺼 둔 동안 72시간)
+SNACK_BOND, BENTO_BOND = 8, 4       # 간식 / 도시락으로 오르는 친밀도
+WIN_BOND, CAPTURE_BOND = 2, 0       # 전투 승리 / 포획으로 오르는 친밀도
+PET_GAIN = 1             # 펫을 한 번 클릭할 때 친밀도 증가량
 AUTO_MEDICINE_COST = 15
 CATCH_AT = 15      # 도감에 없는 상대의 체력(%)이 이 값 이하가 되면 몬스터볼을 1회 던짐
 CATCH_KEEP = 8     # 볼을 던지기 전까지 자동 공격이 상대 체력을 이 값(%) 아래로 깎지 않음
@@ -367,14 +376,14 @@ def sprite_runs(stage, line, blink, foe=False):
 
 
 # ───────────────────────── 게임 로직 ─────────────────────────
-def new_state(gen=1, bits=0.0, dex=None, items=None, upg=None):
+def new_state(gen=1, bits=0.0, dex=None, items=None, upg=None, new_dex=None):
     return dict(
         last=time.time(), gen=gen, stage=0, line=-1, chain=-1, slug="egg", stage_time=0.0, total_time=0.0,
         hunger=80.0, happy=15.0, energy=100.0, hp=100.0, weight=5.0,
         sick=False, sick_t=0.0, sick_flag=False, starve_t=0.0, starve_flag=False,
         sleeping=False, dead=False, care_miss=0,
         train=dict(power=0.0, speed=0.0, mind=0.0),
-        wins=0, losses=0, exp=0.0, shiny=False, rarity="C", raised={}, egg_decided=False, stone=None, everstone=False, bits=float(bits), dex=dict(dex or {}), items=dict(items or {"ball": 3, "great": 0}), upg=dict(upg or {}), explore_t=0.0, battle_t=0.0,
+        wins=0, losses=0, exp=0.0, shiny=False, rarity="C", raised={}, egg_decided=False, evo_declined="", stone=None, everstone=False, bits=float(bits), dex=dict(dex or {}), items=dict(items or {"ball": 3, "great": 0}), upg=dict(upg or {}), new_dex=list(new_dex or []), explore_t=0.0, battle_t=0.0,
     )
 
 
@@ -418,6 +427,8 @@ def sanitize_state(s):
         if k in s["items"]:
             s["items"][k] = min(cap, s["items"][k])
     s["egg_decided"] = bool(s.get("egg_decided", False))
+    if s.get("evo_declined") not in ("", "day", "night"):
+        s["evo_declined"] = ""
     s["everstone"] = bool(s.get("everstone", False))
     if s.get("stone") not in (None, "fire_stone", "water_stone", "thunder_stone"):
         s["stone"] = None
@@ -426,6 +437,8 @@ def sanitize_state(s):
                 if k in UPGRADES and isinstance(v, (int, float)) and not isinstance(v, bool)}
     dx = s.get("dex") if isinstance(s.get("dex"), dict) else {}
     s["dex"] = {k: int(v) for k, v in dx.items() if k in KO and k != "egg" and isinstance(v, (int, float)) and v >= 1}
+    nd = s.get("new_dex") if isinstance(s.get("new_dex"), list) else []
+    s["new_dex"] = [k for k in dict.fromkeys(nd) if isinstance(k, str) and k in s["dex"]]  # 아직 확인 안 한 새 포켓몬
     for k in s["raised"]:  # 키워 본 포켓몬은 도감에도 등록
         s["dex"].setdefault(k, 1)
     if s["stage"] == 0:  # 알: 계통은 부화할 때 정해짐
@@ -467,6 +480,8 @@ class Game:
         self.clock = time.time     # 전투 시계(테스트에서 가짜 시계로 교체 가능)
         self.cfg = dict(DEFAULT_CFG)
         self.log = []  # (시각, 메시지)
+        self.evo_pending = None    # (진화할 형태, "day"/"night"): 이브이 진화 여부를 사용자에게 물어봐야 함
+        self.evo_ok = None         # 사용자가 진화를 승인한 시간대
         self.up_t = 0.0            # 프로그램이 켜져 있던 시간(초). EVOLVE_DELAY 가 지나야 부화/진화
         self.fx = []               # 아이템 사용 연출 대기열 [(아이템, 시각)]
         self.fx_on = True
@@ -503,6 +518,8 @@ class Game:
                 self.cfg[k] = None
         for k in ("battle_window", "auto_battle_window", "roam", "click_through", "sound", "auto_battle", "auto_feed", "auto_catch", "mini"):
             self.cfg[k] = bool(self.cfg[k])
+        self.cfg.update(roam=True, auto_battle=True, auto_feed=True, auto_catch=True, battle_window=True,
+                        auto_battle_window=False)  # 설정 메뉴에서 숨긴 항목: 항상 기본값
         if "layer" not in cfg and "topmost" in cfg:
             self.cfg["layer"] = "top" if cfg["topmost"] else "normal"
         if self.cfg["layer"] not in ("top", "normal", "bottom"):
@@ -594,11 +611,15 @@ class Game:
         return " · ".join(parts)
 
     def needs_stone(self):
-        """이브이가 최종 진화를 앞두고 있고, 돌도 친밀도 조건(70↑·돌봄 실수 ≤2)도 없으면 True."""
+        """피카츄(라이츄로), 또는 이브이가 돌 없이 진화할 수 없는 상태(돌봄 실수 3회 이상)면 True."""
         s = self.s
-        if s["stage"] == 0 or s["stage"] >= 3 or s["chain"] < 0 or "@eevee" not in CHAINS[s["chain"]]["forms"]:
+        if s["stage"] == 0 or s["stage"] >= 3 or s["chain"] < 0:
             return False
-        return s["stone"] is None and not (s["care_miss"] <= 2 and s["happy"] >= 70)
+        if s["slug"] == "pikachu":  # 라이츄는 번개의 돌로만 진화
+            return s["stone"] is None
+        if "@eevee" not in CHAINS[s["chain"]]["forms"]:
+            return False
+        return s["stone"] is None and not s["care_miss"] <= 2
 
     # --- 시간 진행 ---
     def catchup_report(self, dt):
@@ -628,7 +649,7 @@ class Game:
     def catchup(self, dt):
         full, dt = dt, min(dt, MAX_OFFLINE)
         s = self.s
-        if full > dt and not s["dead"] and s["stage"] > 0:  # 시뮬레이션 상한(8시간)을 넘긴 시간도 친밀도는 48시간 기준으로 반영
+        if full > dt and not s["dead"] and s["stage"] > 0:  # 시뮬레이션 상한(8시간)을 넘긴 시간도 친밀도는 72시간 기준으로 반영
             s["happy"] = max(0.0, s["happy"] - 100 * (full - dt) / OFFLINE_BOND_SEC)
         self.fx_on = False  # 자리를 비운 동안 쓴 아이템은 연출하지 않음
         try:
@@ -671,7 +692,7 @@ class Game:
             s["hunger"] = min(100.0, s["hunger"] + 30)
             s["weight"] += 0.5
             if not offline:
-                self.say(f"[자동 급식] 알아서 밥을 먹었다. (-{AUTO_FEED_COST} Bits)")
+                self.say(f"밥을 먹었다. (-{AUTO_FEED_COST} Bits)")
 
         if s["sleeping"]:
             s["energy"] = min(100.0, s["energy"] + 100 * dt / 1200 * (1 + 0.15 * self.upg("rest")))
@@ -690,14 +711,10 @@ class Game:
                     self.use_item(kind, auto=True)
                     break
 
-        if offline:  # 꺼 둔 동안: 48시간에 100→0 (배고픔/병 가중 없음)
+        if offline:  # 꺼 둔 동안: 72시간에 100→0 (배고픔/병 가중 없음)
             drain = 100 * dt / OFFLINE_BOND_SEC
         else:
-            drain = 100 * dt / BOND_DRAIN_SEC
-            if s["hunger"] < 20:
-                drain *= 2
-            if s["sick"]:
-                drain *= 2
+            drain = 100 * dt / BOND_DRAIN_SEC * BOND_DRAIN_MULT[(s["hunger"] < 20, bool(s["sick"]))]
         s["happy"] = max(0.0, s["happy"] - drain)
 
         # 질병 / 굶주림
@@ -712,7 +729,7 @@ class Game:
                 s["bits"] -= AUTO_MEDICINE_COST
                 self.cure_sick(15)
                 if not offline:
-                    self.say(f"[자동 치료] 약을 먹고 나았다. (-{AUTO_MEDICINE_COST} Bits)")
+                    self.say(f"약을 먹고 나았다. (-{AUTO_MEDICINE_COST} Bits)")
         if s["sick"]:
             s["sick_t"] += dt
             s["hp"] -= 100 * dt / 3600 * k
@@ -757,6 +774,25 @@ class Game:
         if not offline:
             self.check_evolve()
 
+    @staticmethod
+    def day_period():
+        return "day" if 6 <= time.localtime().tm_hour < 20 else "night"
+
+    def approve_evolve(self):
+        """이브이 진화를 승인함 → 바로 진화."""
+        if self.evo_pending:
+            self.evo_ok = self.evo_pending[1]
+            self.evo_pending = None
+            self.s["evo_declined"] = ""
+            self.check_evolve()
+
+    def decline_evolve(self):
+        """이브이로 유지하기로 함. 낮/밤이 바뀐 뒤에도 조건이 유지되면 다시 물어봄."""
+        if self.evo_pending:
+            self.s["evo_declined"] = self.evo_pending[1]
+            self.evo_pending = None
+            self.say(f"{self.name()}(으)로 유지하기로 했다. (낮/밤이 바뀌면 다시 물어볼게요)")
+
     def resolve_form(self, spec):
         """진화 형태 결정. '@...' 는 분기 진화 규칙. None 이면 조건(진화의 돌)이 아직 안 맞아 진화 대기."""
         if not spec.startswith("@"):
@@ -768,8 +804,13 @@ class Game:
                 slug = STONE_FORM[s["stone"]]
                 s["stone"] = None
                 return slug
-            if s["care_miss"] <= 2 and s["happy"] >= 70:  # 친밀도 진화: 낮=에브이, 밤=블래키
-                return "espeon" if 6 <= time.localtime().tm_hour < 20 else "umbreon"
+            if s["care_miss"] <= 2:  # 낮=에스피, 밤=블래키: 자동으로 진화하지 않고 사용자가 진화/유지를 고름
+                period = self.day_period()
+                if self.evo_ok == period:
+                    self.evo_ok = None
+                    return "espeon" if period == "day" else "umbreon"
+                if s["evo_declined"] != period:  # 이 시간대에 '유지'를 고르지 않았으면 물어봄 (낮↔밤이 바뀌면 다시 물어봄)
+                    self.evo_pending = ("espeon" if period == "day" else "umbreon", period)
             return None
         if spec == "@ralts":
             return "gallade" if t["power"] > t["mind"] else "gardevoir"
@@ -800,14 +841,15 @@ class Game:
             s["everstone"] = True
             self._fx(kind)
             return self.say("변함없는 돌을 지녔다! 다시 알로 돌아가기 전까지 진화하지 않는다. (상태 화면에서 해제)")
-        if s["stage"] >= 3 or "@eevee" not in CHAINS[s["chain"]]["forms"]:
+        pika = s["slug"] == "pikachu" and kind == "thunder_stone"
+        if s["stage"] >= 3 or not (pika or "@eevee" in CHAINS[s["chain"]]["forms"]):
             return self.say("이 포켓몬에게는 효과가 없다.")
         if s["stone"]:
             return self.say("이미 진화의 돌을 쓰는 중이다.")
         s["items"][kind] -= 1
         s["stone"] = kind
         self._fx(kind)
-        self.say(f"{item_label(kind)}을(를) 사용했다! 진화 조건이 차면 {KO[STONE_FORM[kind]]}(으)로 진화한다.")
+        self.say(f"{item_label(kind)}을(를) 사용했다! 진화 조건이 차면 {KO['raichu'] if pika else KO[STONE_FORM[kind]]}(으)로 진화한다.")
 
     def release_everstone(self):
         s = self.s
@@ -848,6 +890,7 @@ class Game:
     def check_evolve(self):
         s = self.s
         st = s["stage"]
+        self.evo_pending = None
         if s["dead"] or self.up_t < EVOLVE_DELAY:
             return  # 켠 직후에는 잠깐 기다렸다가 진행 (꺼 둔 동안은 진행하지 않음)
         nxt = st + 1
@@ -874,16 +917,22 @@ class Game:
             ch = CHAINS[s["chain"]]
             slug = self.resolve_form(ch["forms"][nxt - 1 - (3 - len(ch["forms"]))])
             if slug is None:
-                return  # 진화의 돌(또는 친밀도 조건)이 필요해서 대기
+                return  # 진화의 돌(또는 사용자의 선택)이 필요해서 대기
+            if slug in STONE_ONLY:  # 피카츄 → 라이츄: 번개의 돌이 있어야 진화
+                if s["stone"] != STONE_ONLY[slug]:
+                    return
+                s["stone"] = None
             s["exp"] = max(0.0, s["exp"] - EXP_NEED.get(nxt, 0))  # 초과분은 다음 단계로 이월
             s["slug"] = slug
         s["stage"] = nxt
         s["stage_time"] = 0.0
+        s["evo_declined"] = ""
         s["hp"] = 100.0
         s["weight"] += 3
         s["raised"][s["slug"]] = 1  # 도감: 키워 본 포켓몬
         if s["slug"] not in s["dex"]:  # 키워서 얻은 포켓몬도 도감에 등록
             s["dex"][s["slug"]] = 1
+            s["new_dex"].append(s["slug"])
             self.say(f"도감 등록! {self.name()} ({len(s['dex'])}종)")
         if st == 0:
             self.say(f"알이 부화했다! {RARITY_STARS[s['rarity']]} {self.display_name()}!"
@@ -915,7 +964,7 @@ class Game:
                 return self.say("간식을 사려면 5 Bits가 필요하다.")
             s["bits"] -= 5
             s["hunger"] = min(100, s["hunger"] + 10)
-            s["happy"] = min(100, s["happy"] + 15)
+            s["happy"] = min(100, s["happy"] + SNACK_BOND)
             s["weight"] += 2
             self._fx("snack")
             self.say("간식 냠냠! 기분이 좋아졌다.")
@@ -937,7 +986,7 @@ class Game:
         s["exp"] += 2
         s["energy"] -= 10
         s["hunger"] = max(0, s["hunger"] - 5)
-        s["happy"] = max(0, s["happy"] - 2)
+        s["happy"] = max(0, s["happy"] - TRAIN_BOND_LOSS)
         s["weight"] = max(1.0, s["weight"] - 0.5)
         self.say(f"{TRAIN_LABEL[key]} 훈련 완료!")
 
@@ -992,7 +1041,7 @@ class Game:
             if s["hunger"] >= 100:
                 return self.say("배불러서 안 먹는다.")
             s["hunger"] = min(100.0, s["hunger"] + 60)
-            s["happy"] = min(100.0, s["happy"] + 5)
+            s["happy"] = min(100.0, s["happy"] + BENTO_BOND)
             s["weight"] += 1
         elif kind == "ticket":
             return self.say("알일 때 가방에서 쓰면 계통을 고를 수 있다.")
@@ -1000,6 +1049,7 @@ class Game:
             if s["energy"] >= 100:
                 return self.say("기력이 가득 차 있다.")
             s["energy"] = min(100.0, s["energy"] + (40 if kind == "energy1" else 100))
+            s["happy"] = max(0.0, s["happy"] - ENERGY_ITEM_BOND_LOSS)   # 억지로 기운을 내서 친밀도가 조금 줄어듦
             if s["sleeping"] and s["energy"] > 20:
                 s["sleeping"] = False  # 기력이 돌아오면 잠에서 깸
         elif kind == "candy":
@@ -1008,7 +1058,7 @@ class Game:
             self.say(f"{TRAIN_LABEL[key]} 수치가 올랐다!")
         s["items"][kind] -= 1
         self._fx(kind)
-        self.say(f"{'[자동] ' if auto else ''}{SHOP[kind][0]}을(를) 썼다.")
+        self.say(f"{SHOP[kind][0]}을(를) 썼다.")
 
     def _fx(self, kind):
         if self.fx_on:
@@ -1388,13 +1438,13 @@ class Game:
         if not ab or ab["settled"]:
             return
         ab["settled"] = True
-        res, foe, tag = ab["result"], ab["foe"], "[자동] " if ab["auto"] else ""
+        res, foe, tag = ab["result"], ab["foe"], ""   # 자동/수동 같은 내부 표시는 메시지에 붙이지 않음
         gain = self.exp_gain(ab)
         s["exp"] += gain
         exp_txt = f", +{gain} EXP" if gain else ""
         if res in ("win", "captured"):
             s["wins"] += 1
-            s["happy"] = min(100, s["happy"] + (8 if res == "captured" else 5))
+            s["happy"] = min(100, s["happy"] + (CAPTURE_BOND if res == "captured" else WIN_BOND))
             s["hp"] = max(BATTLE_HP_FLOOR, s["hp"] - (1 if res == "captured" else 2))
             s["train"][random.choice(TRAIN_KEYS)] += 0.5
             reward = ab["reward"] // 2 if res == "captured" else ab["reward"]
@@ -1402,6 +1452,8 @@ class Game:
         if res == "captured":
             first = ab["slug"] not in s["dex"]
             s["dex"][ab["slug"]] = s["dex"].get(ab["slug"], 0) + 1
+            if first:
+                s["new_dex"].append(ab["slug"])  # 도감을 열어 확인하기 전까지 ✨ 표시
             if first:
                 s["bits"] += 20
                 self.say(f"{tag}{foe}을(를) 포획했다! 도감 등록 ({len(s['dex'])}종) +20 Bits{exp_txt}")
@@ -1422,9 +1474,31 @@ class Game:
         if res in ("win", "captured"):
             self.roll_drops(ab)
 
+    def reset_all(self):
+        """전체 초기화: 진행 데이터를 모두 지우고 1세대 새 알로 처음부터 (창 위치 등 설정은 유지).
+        실수에 대비해 직전 저장을 save.json.reset-backup 으로 한 부 남김(다음 초기화 때 덮어씀)."""
+        try:
+            if os.path.exists(SAVE):
+                shutil.copyfile(SAVE, SAVE + ".reset-backup")
+            for f in (SAVE, SAVE + ".bak"):
+                if os.path.exists(f):
+                    os.remove(f)
+        except OSError:
+            pass
+        self.s = new_state()
+        self.active_battle = None
+        self.evo_pending = self.evo_ok = None
+        self.up_t = 0.0
+        self.fx.clear()
+        self.log.clear()
+        self.say("모든 데이터를 초기화했다. 새 알을 받았다!")
+        self.save()
+
     def reincarnate(self):
         s = self.s
-        self.s = new_state(gen=s["gen"] + 1, bits=s["bits"], dex=s["dex"], items=s["items"], upg=s["upg"])
+        # 훈련 수치(힘/속도/지능)·경험치·돌 등은 새로 시작(리셋). Bits·도감·가방·강화(영구)는 유지
+        self.s = new_state(gen=s["gen"] + 1, bits=s["bits"], dex=s["dex"], items=s["items"], upg=s["upg"],
+                           new_dex=s.get("new_dex"))
         self.say(f"{self.s['gen']}세대 알을 받았다!")
 
 
@@ -1463,6 +1537,7 @@ class App:
         self.page = "main"
         self.dex_page = 0
         self._egg_prompted = False
+        self._evo_asking = False
         self._closing = False   # 종료 중이면 예약된 반복 작업(loop/move_loop)이 더는 돌지 않게 함
         self.img_cache = {}
         self.hearts = []  # [x, y, life]
@@ -1533,7 +1608,7 @@ class App:
             self.dev = None
             self.full = box = tk.Frame(self.root, bg=SHELL, padx=8, pady=6)
             bg0 = SHELL
-        bar = tk.Frame(box, bg=bg0)
+        bar = self.bar_w = tk.Frame(box, bg=bg0)
         bar.pack(fill="x", padx=pad)
         t = tk.Label(bar, text="DigiPet", bg=bg0, fg="#9fb0d0", font=(FONT, 9, "bold"))
         t.pack(side="left", padx=(6, 0))
@@ -1571,6 +1646,9 @@ class App:
             self.sb_btns["ball:" + kind] = b
         self._bui = False
         self._last_bt = 0.0
+        self.box, self.box_bg = box, bg0
+        self.shop_open, self.shop_frame = False, None
+        self._dex_prev, self._dex_t0 = None, 0.0
         self.btns = {}
         specs = [
             ("먹이", lambda: self.popup(self.feed_menu, "먹이")),
@@ -1621,9 +1699,6 @@ class App:
         self.v_sound = tk.BooleanVar(value=g.cfg["sound"])
         m = tk.Menu(self.root, tearoff=0)
         m.add_command(label="미니/전체 모드 전환 (더블클릭)", command=lambda: self.show_mode(not g.cfg["mini"]))
-        m.add_command(label="상점 열기", command=self.open_shop)
-        m.add_command(label="상태 보기", command=self.show_stats)
-        m.add_command(label="도감 보기", command=self.show_dex)
         win = tk.Menu(m, tearoff=0)
         for val, txt in (("top", "항상 위"), ("normal", "보통"), ("bottom", "항상 아래 (다른 창 뒤, 바탕화면 위)")):
             win.add_radiobutton(label=txt, value=val, variable=self.v_layer, command=self.apply_cfg)
@@ -1635,13 +1710,7 @@ class App:
         win.add_separator()
         win.add_command(label="창 되찾기 / 앞으로 (Ctrl+Alt+P)", command=self.rescue)
         m.add_cascade(label="창 설정 (투명/클릭 통과)", menu=win)
-        m.add_checkbutton(label="바탕화면 돌아다니기 (미니 모드)", variable=self.v_roam, command=self.apply_cfg)
         m.add_command(label="펫을 바닥(작업표시줄 위)으로 내리기", command=self.drop_to_ground)
-        m.add_checkbutton(label="자동 배틀", variable=self.v_auto, command=self.apply_cfg)
-        m.add_checkbutton(label="전투 창 열기 (미니 모드, 직접 시작한 배틀)", variable=self.v_bw, command=self.apply_cfg)
-        m.add_checkbutton(label="자동 배틀도 전투 창 열기 (미니 모드)", variable=self.v_abw, command=self.apply_cfg)
-        m.add_checkbutton(label="자동 돌봄: 급식·치료 (Bits 소모)", variable=self.v_feed, command=self.apply_cfg)
-        m.add_checkbutton(label="자동 포획: 몬스터볼 자동 구매", variable=self.v_catch, command=self.apply_cfg)
         m.add_checkbutton(label="알림 소리", variable=self.v_sound, command=self.apply_cfg)
         m.add_separator()
         m.add_command(label="몬스터볼 던지기", command=lambda: g.throw_ball("ball"))
@@ -1649,6 +1718,7 @@ class App:
         m.add_command(label="하이퍼볼 던지기", command=lambda: g.throw_ball("ultra"))
         m.add_separator()
         m.add_command(label="새 알로 환생", command=self.reincarnate)
+        m.add_command(label="전체 초기화 (모든 데이터 삭제)", command=self.reset_game)
         m.add_command(label="저장 후 종료", command=self.quit)
         self.menu = m
         self.root.bind("<Button-3>", lambda e: self.menu.tk_popup(e.x_root, e.y_root))
@@ -1670,102 +1740,102 @@ class App:
             self.open_battle_window()
 
     def open_shop(self):
-        """상점 창: [아이템] 탭(수량을 골라 한꺼번에 구매) / [강화] 탭(영구 강화 레벨업)."""
-        old = getattr(self, "shop_win", None)
-        if old is not None and old.winfo_exists():
-            old.lift()
-            return
-        g, root = self.g, self.root
-        win = self.shop_win = tk.Toplevel(root)
-        win.title("상점")
-        win.configure(bg=SHELL, padx=12, pady=10)
-        win.resizable(False, False)
-        win.transient(root)
-        if g.cfg["layer"] == "top":
-            win.attributes("-topmost", True)
-        fg, dim = "#e8edf8", "#9fb0d0"
+        """상점: 팝업 창 대신 도감 틀의 게임 화면이 상점 화면으로 바뀜. [아이템] 탭(수량을 골라 한꺼번에 구매) /
+        [강화] 탭(영구 강화). 구매가 끝나거나 [닫기]를 누르면 게임 화면으로 돌아옴."""
+        g = self.g
+        if self.shop_open:
+            return self.close_shop()
+        if g.cfg["mini"]:
+            self.show_mode(False)
+        if g.battle_running():
+            return g.say("전투 중에는 상점을 열 수 없다.")
+        for w in (self.bar_w, self.screen, self.info, self.grid, self.bgrid):
+            w.pack_forget()   # 상점 화면은 위 제목줄까지 비우고 틀 화면 전체를 씀
+        bgc, fg, dim = self.box_bg, "#e8edf8", "#9fb0d0"
+        page = self.shop_frame = tk.Frame(self.box, bg=bgc)
+        page.pack(fill="both", expand=True, padx=4)
+        self.shop_open = True
 
-        head = tk.Frame(win, bg=SHELL)
-        head.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        bits_lbl = tk.Label(head, bg=SHELL, fg="#ffd23c", font=(FONT, 11, "bold"))
+        head = tk.Frame(page, bg=bgc)
+        head.pack(fill="x", pady=(0, 1))
+        bits_lbl = tk.Label(head, bg=bgc, fg="#ffd23c", font=(FONT, 10, "bold"))
         bits_lbl.pack(side="left")
-        tabs = tk.Frame(head, bg=SHELL)
+        tabs = tk.Frame(head, bg=bgc)
         tabs.pack(side="right")
-        items_f = tk.Frame(win, bg=SHELL)
-        upg_f = tk.Frame(win, bg=SHELL)
-        items_f.grid(row=1, column=0, sticky="nsew")
-        upg_f.grid(row=1, column=0, sticky="nsew")  # 같은 자리에 겹쳐 두고 tkraise 로 전환(창 크기는 둘 중 큰 쪽)
+        body = tk.Frame(page, bg=bgc)
+        body.pack(fill="both", expand=True)
+        items_f = tk.Frame(body, bg=bgc)
+        upg_f = tk.Frame(body, bg=bgc)
+        items_f.place(x=0, y=0, relwidth=1, relheight=1)
+        upg_f.place(x=0, y=0, relwidth=1, relheight=1)
+        desc = tk.Label(page, bg=bgc, fg=dim, font=(FONT, 8), anchor="w", justify="left", wraplength=330,
+                        text="항목에 마우스를 올리면 설명이 나와요.")
+        desc.pack(fill="x", pady=(1, 0))
         tab_btns = {}
 
         def show_tab(name):
             (items_f if name == "items" else upg_f).tkraise()
-            for k, b in tab_btns.items():
-                b.config(bg="#3b82e0" if k == name else BTN)
+            for k, bt in tab_btns.items():
+                bt.config(bg="#3b82e0" if k == name else BTN)
 
-        for key, text in (("items", "아이템"), ("upg", "강화 (영구)")):
-            b = tk.Button(tabs, text=text, command=lambda k=key: show_tab(k), bg=BTN, fg="#fff", bd=0, width=11,
-                          font=(FONT, 9, "bold"), activebackground="#6a7390", activeforeground="#fff")
-            b.pack(side="left", padx=2)
-            tab_btns[key] = b
+        def mkb(parent, text, cmd, width, bg=BTN, bold=False, font=9):
+            return tk.Button(parent, text=text, command=cmd, bg=bg, fg="#fff", bd=0, width=width,
+                             font=(FONT, font, "bold" if bold else "normal"), activebackground="#6a7390",
+                             activeforeground="#fff", disabledforeground="#6b7385", pady=0)
+
+        for key, text in (("items", "아이템"), ("upg", "강화")):
+            bt = mkb(tabs, text, lambda k=key: show_tab(k), 6, bold=True)
+            bt.pack(side="left", padx=1)
+            tab_btns[key] = bt
+        mkb(tabs, "닫기", self.close_shop, 5).pack(side="left", padx=(6, 0))
+
+        def hover(widgets, text):
+            for w in widgets:
+                w.bind("<Enter>", lambda e, t=text: desc.config(text=t))
 
         # ── 아이템 탭 ──
         rows = {}
-        for i, (key, (nm, price, desc)) in enumerate(SHOP.items()):
+        for i, (key, (nm, price, dsc)) in enumerate(SHOP.items()):
             var = tk.StringVar(value="0")
-            name_f = tk.Frame(items_f, bg=SHELL)
-            name_f.grid(row=i, column=0, sticky="w")
-            ic = self.cached_image(f"items/{key}", 32, 4)  # 아이템 이름 옆 아이콘 (sprites/items)
-            if ic:
-                tk.Label(name_f, image=ic, bg=SHELL).pack(side="left")
-            tk.Label(name_f, text=nm, bg=SHELL, fg=fg, font=(FONT, 10, "bold"), width=11, anchor="w").pack(side="left")
-            tk.Label(items_f, text=desc, bg=SHELL, fg=dim, font=(FONT, 9), width=21, anchor="w").grid(row=i, column=1, sticky="w")
-            tk.Label(items_f, text=f"{price} Bits", bg=SHELL, fg=fg, font=(FONT, 9), width=8, anchor="e").grid(row=i, column=2)
-            own = tk.Label(items_f, bg=SHELL, fg=dim, font=(FONT, 9), width=7, anchor="e")
-            own.grid(row=i, column=3)
-            sp = tk.Spinbox(items_f, from_=0, to=999, width=4, textvariable=var, font=(FONT, 10), justify="center")
-            sp.grid(row=i, column=4, padx=(8, 2), pady=2)
-            btns = tk.Frame(items_f, bg=SHELL)
-            btns.grid(row=i, column=5, sticky="w")
+            ws = []
+            ic = self.cached_image(f"items/{key}", 16, 2)
+            ws.append(tk.Label(items_f, image=ic, bg=bgc) if ic else tk.Label(items_f, text=" ", bg=bgc))
+            ws.append(tk.Label(items_f, text=nm, bg=bgc, fg=fg, font=(FONT, 9, "bold"), width=10, anchor="w"))
+            ws.append(tk.Label(items_f, text=f"{price}", bg=bgc, fg="#ffd23c", font=(FONT, 9), width=5, anchor="e"))
+            own = tk.Label(items_f, bg=bgc, fg=dim, font=(FONT, 8), width=6, anchor="e")
+            ws.append(own)
+            sp = tk.Spinbox(items_f, from_=0, to=999, width=3, textvariable=var, font=(FONT, 8), justify="center", bd=1)
+            mx = mkb(items_f, "최대", lambda k=key: fill_max(k), 3, font=8)
+            for c_, w in enumerate(ws):
+                w.grid(row=i, column=c_, sticky="w", pady=0)
+            sp.grid(row=i, column=4, padx=(6, 2))
+            mx.grid(row=i, column=5)
+            hover(ws + [sp, mx], f"{nm} — {dsc}")
             rows[key] = dict(var=var, own=own)
-            for txt, cmd in (("+10", lambda k=key: bump(k, 10)), ("최대", lambda k=key: fill_max(k)),
-                             ("0", lambda k=key: rows[k]["var"].set("0"))):
-                tk.Button(btns, text=txt, command=cmd, bg=BTN, fg="#fff", bd=0, font=(FONT, 8), width=3,
-                          activebackground="#6a7390", activeforeground="#fff").pack(side="left", padx=1)
             var.trace_add("write", lambda *a: refresh())
         n = len(SHOP)
-        total_lbl = tk.Label(items_f, bg=SHELL, fg=fg, font=(FONT, 10, "bold"))
-        total_lbl.grid(row=n, column=0, columnspan=4, sticky="w", pady=(8, 0))
-        foot = tk.Frame(items_f, bg=SHELL)
-        foot.grid(row=n, column=4, columnspan=2, sticky="e", pady=(8, 0))
-        buy_btn = tk.Button(foot, text="구매", command=lambda: do_buy(), bg="#3b82e0", fg="#fff", bd=0, width=7,
-                            font=(FONT, 10, "bold"), activebackground="#5b9cf0", activeforeground="#fff")
-        buy_btn.pack(side="left", padx=2)
-        tk.Button(foot, text="닫기", command=win.destroy, bg=BTN, fg="#fff", bd=0, width=6, font=(FONT, 10),
-                  activebackground="#6a7390", activeforeground="#fff").pack(side="left", padx=2)
+        foot = tk.Frame(items_f, bg=bgc)
+        foot.grid(row=n, column=0, columnspan=6, sticky="ew", pady=(2, 0))
+        total_lbl = tk.Label(foot, bg=bgc, fg=fg, font=(FONT, 9, "bold"))
+        total_lbl.pack(side="left")
+        buy_btn = mkb(foot, "구매", lambda: do_buy(), 7, "#3b82e0", True, 10)
+        buy_btn.pack(side="right")
 
         # ── 강화 탭 ──
-        tk.Label(upg_f, text="강화는 영구적이며 환생해도 유지돼요.", bg=SHELL, fg=dim, font=(FONT, 9)).grid(
-            row=0, column=0, columnspan=6, sticky="w", pady=(0, 4))
+        tk.Label(upg_f, text="강화는 영구적이며 환생해도 유지돼요.", bg=bgc, fg=dim, font=(FONT, 8)).grid(
+            row=0, column=0, columnspan=5, sticky="w", pady=(0, 3))
         urows = {}
-        for i, (key, (nm, desc, mx, base, grow)) in enumerate(UPGRADES.items(), start=1):
-            tk.Label(upg_f, text=nm, bg=SHELL, fg=fg, font=(FONT, 10, "bold"), width=11, anchor="w").grid(row=i, column=0, sticky="w")
-            eff = tk.Label(upg_f, bg=SHELL, fg=dim, font=(FONT, 9), width=40, anchor="w")
-            eff.grid(row=i, column=1, sticky="w")
-            lv = tk.Label(upg_f, bg=SHELL, fg=fg, font=(FONT, 9), width=7, anchor="e")
-            lv.grid(row=i, column=2)
-            cost = tk.Label(upg_f, bg=SHELL, fg=fg, font=(FONT, 9), width=10, anchor="e")
-            cost.grid(row=i, column=3)
-            b1 = tk.Button(upg_f, text="강화", command=lambda k=key: do_upgrade(k, 1), bg="#3b82e0", fg="#fff", bd=0,
-                           width=6, font=(FONT, 9, "bold"), activebackground="#5b9cf0", activeforeground="#fff",
-                           disabledforeground="#8e99b3")
-            b1.grid(row=i, column=4, padx=(8, 2), pady=2)
-            b2 = tk.Button(upg_f, text="최대", command=lambda k=key: do_upgrade(k, 99), bg=BTN, fg="#fff", bd=0,
-                           width=5, font=(FONT, 9), activebackground="#6a7390", activeforeground="#fff",
-                           disabledforeground="#6b7385")
-            b2.grid(row=i, column=5, padx=2)
-            urows[key] = dict(eff=eff, lv=lv, cost=cost, b1=b1, b2=b2)
-        tk.Button(upg_f, text="닫기", command=win.destroy, bg=BTN, fg="#fff", bd=0, width=6, font=(FONT, 10),
-                  activebackground="#6a7390", activeforeground="#fff").grid(row=len(UPGRADES) + 1, column=5, sticky="e", pady=(8, 0))
+        for i, (key, (nm, dsc, mx_, base, grow)) in enumerate(UPGRADES.items(), start=1):
+            l1 = tk.Label(upg_f, text=nm, bg=bgc, fg=fg, font=(FONT, 9, "bold"), width=11, anchor="w")
+            lv = tk.Label(upg_f, bg=bgc, fg=fg, font=(FONT, 9), width=8, anchor="e")
+            cost = tk.Label(upg_f, bg=bgc, fg=fg, font=(FONT, 9), width=9, anchor="e")
+            b1 = mkb(upg_f, "강화", lambda k=key: do_upgrade(k, 1), 5, "#3b82e0", True)
+            b2 = mkb(upg_f, "최대", lambda k=key: do_upgrade(k, 99), 4)
+            for c_, w in enumerate((l1, lv, cost)):
+                w.grid(row=i, column=c_, sticky="w", pady=2)
+            b1.grid(row=i, column=3, padx=(6, 2))
+            b2.grid(row=i, column=4)
+            urows[key] = dict(lv=lv, cost=cost, b1=b1, b2=b2, ws=[l1, lv, cost, b1, b2])
 
         def qty(key):
             try:
@@ -1776,29 +1846,26 @@ class App:
         def total():
             return sum(SHOP[k][1] * qty(k) for k in SHOP)
 
-        def bump(key, n):
-            rows[key]["var"].set(str(min(999, qty(key) + n)))
-
         def fill_max(key):
             others = total() - SHOP[key][1] * qty(key)
             rows[key]["var"].set(str(max(0, min(999, (int(g.s["bits"]) - others) // SHOP[key][1]))))
 
         def refresh():
-            if not win.winfo_exists():
+            if not page.winfo_exists():
                 return
             t, bits = total(), int(g.s["bits"])
-            bits_lbl.config(text=f"보유 Bits: {bits}")
+            bits_lbl.config(text=f"Bits {bits}")
             for k, r in rows.items():
                 r["own"].config(text=f"보유 {g.s['items'].get(k, 0)}")
             count = sum(qty(k) for k in SHOP)
-            total_lbl.config(text=f"합계 {t} Bits ({count}개)" + ("  — Bits 부족!" if t > bits else ""),
+            total_lbl.config(text=f"합계 {t} ({count}개)" + (" · 부족!" if t > bits else ""),
                              fg="#ff6b6b" if t > bits else fg)
             buy_btn.config(state="normal" if 0 < t <= bits else "disabled")
             for k, r in urows.items():
-                lv_now, mx = g.upg(k), UPGRADES[k][2]
-                r["lv"].config(text=f"Lv {lv_now}/{mx}")
-                r["eff"].config(text=f"{UPGRADES[k][1]} → 현재 {upgrade_effect(k, lv_now)}")
-                if lv_now >= mx:
+                lv_now, mx_ = g.upg(k), UPGRADES[k][2]
+                r["lv"].config(text=f"Lv {lv_now}/{mx_}")
+                hover(r["ws"], f"{UPGRADES[k][0]} — {UPGRADES[k][1]} → 현재 {upgrade_effect(k, lv_now)}")
+                if lv_now >= mx_:
                     r["cost"].config(text="MAX", fg="#ffd23c")
                     r["b1"].config(state="disabled")
                     r["b2"].config(state="disabled")
@@ -1810,30 +1877,34 @@ class App:
 
         def do_buy():
             if g.buy_many({k: qty(k) for k in SHOP}):
-                win.destroy()  # 아이템 구매가 끝나면 상점 창을 닫음
+                self.close_shop()  # 아이템 구매가 끝나면 게임 화면으로 돌아감
             else:
                 refresh()
 
-        def do_upgrade(key, n):  # 강화는 여러 개를 연달아 올리는 일이 많아 창을 닫지 않음
+        def do_upgrade(key, n):  # 강화는 여러 번 연달아 올리는 일이 많아 상점에 머무름
             g.buy_upgrade(key, n)
             refresh()
 
         def tick():  # 열어 둔 동안에도 Bits 증가/보유 수가 갱신되도록
-            if win.winfo_exists():
+            if self.shop_open and page.winfo_exists():
                 refresh()
-                win.after(1000, tick)
+                page.after(1000, tick)
 
         show_tab("items")
-        refresh()  # 글자가 채워진 뒤의 실제 크기로 위치를 계산
-        root.update_idletasks()
-        win.update_idletasks()
-        l, t, rr, b = self.work_area()  # 펫 창 근처에 열되, 화면(작업 영역) 밖으로 나가지 않게
-        w, h = win.winfo_reqwidth(), win.winfo_reqheight()
-        # geometry 의 x,y 는 제목줄/테두리를 포함한 바깥 위치 → 크기에 제목줄(약 38px)+테두리(약 18px) 여유를 더함
-        x = min(max(l, root.winfo_x() + 20), max(l, rr - w - 18))
-        y = min(max(t, root.winfo_y() + 20), max(t, b - h - 48))
-        win.geometry(f"+{x}+{y}")
+        refresh()
         tick()
+
+    def close_shop(self):
+        if not self.shop_open:
+            return
+        self.shop_open = False
+        if self.shop_frame is not None:
+            self.shop_frame.destroy()
+            self.shop_frame = None
+        self.bar_w.pack(fill="x")
+        self.screen.pack(pady=2 if self.dev else 4)
+        self.info.pack()
+        (self.bgrid if self._bui else self.grid).pack(pady=self.grid_pad)
 
     def choose_chain(self):
         """계통 선택권 사용: 알일 때 다음에 부화할 진화 계통을 직접 고름 (등급 높은 순 목록)."""
@@ -1899,6 +1970,23 @@ class App:
     def after_new_egg(self):
         """환생 직후: 계통 선택권이 있으면 (메인 루프가) 사용 여부를 물어봄. 없으면 알이 바로 부화."""
         self._egg_prompted = False
+
+    def ask_evolve(self):
+        g = self.g
+        try:
+            pend = g.evo_pending
+            if not pend or g.battle_running():
+                return
+            form, period = pend
+            who = g.name()
+            if messagebox.askyesno("진화", f"진화할 수 있어요! ({'낮' if period == 'day' else '밤'}의 모습)\n{who} → {KO[form]}\n"
+                                         f"진화할까요?\n\n[아니오]를 누르면 {who}(으)로 유지해요.\n"
+                                         "낮/밤이 바뀌어도 조건이 계속되면 다시 물어봐요."):
+                g.approve_evolve()
+            else:
+                g.decline_evolve()
+        finally:
+            self._evo_asking = False
 
     def ask_ticket(self):
         """알 + 계통 선택권 보유: 사용 여부를 확인할 때까지 부화하지 않음."""
@@ -2097,7 +2185,7 @@ class App:
     def tray_items(self):
         c = self.g.cfg
         return [(1, "보이기" if self.hidden else "숨기기", False), (2, "앞으로 가져오기 (Ctrl+Alt+P)", False), None,
-                (7, "배틀 시작", False), (3, "미니 모드", c["mini"]), (4, "바탕화면 돌아다니기", c["roam"]),
+                (7, "배틀 시작", False), (3, "미니 모드", c["mini"]),
                 (5, "클릭 통과 (해제: Ctrl+Alt+D)", c["click_through"]), None, (6, "저장 후 종료", False)]
 
     def tray_command(self, cmd):
@@ -2151,6 +2239,22 @@ class App:
         self.page = "stats"
         self.show_mode(False)
 
+    def reset_game(self):
+        """설정 → 전체 초기화: 두 번 확인한 뒤 모든 진행 데이터를 지우고 처음부터 시작."""
+        if not messagebox.askyesno("전체 초기화", "모든 데이터를 지우고 처음부터 시작할까요?\n\n"
+                                   "지워지는 것: 펫, Bits, 도감, 가방, 영구 강화, 세대, 전적\n"
+                                   "(창 위치·투명도 같은 설정은 유지돼요)", icon="warning", default="no"):
+            return
+        if not messagebox.askyesno("전체 초기화 - 마지막 확인", "정말 초기화할까요? 되돌릴 수 없어요.\n"
+                                   "(직전 저장은 save.json.reset-backup 으로 한 부 남겨요)", icon="warning", default="no"):
+            return
+        self.close_shop()
+        if self.bw_alive():
+            self.bw.destroy()
+        self.page, self.drop, self.hearts = "main", None, []
+        self.g.reset_all()
+        self.after_new_egg()
+
     def reincarnate(self):
         if messagebox.askyesno("환생", "현재 펫을 보내고 새 알로 시작할까요?\n(Bits · 도감 · 가방 · 강화는 유지돼요)"):
             self.g.reincarnate()
@@ -2202,6 +2306,9 @@ class App:
                     self.root.after(300, self.ask_ticket)
             else:
                 self._egg_prompted = False
+            if self.g.evo_pending and not self._evo_asking and not self.g.battle_running():
+                self._evo_asking = True  # 이브이: 낮/밤 진화 여부를 사용자에게 물어봄
+                self.root.after(300, self.ask_evolve)
             ab = self.g.active_battle
             # 직접 시작한 배틀만 전투 창을 자동으로 엶. 자동 배틀은 백그라운드에서 조용히 진행(설정으로 켤 수 있음,
             # 진행 중인 자동 배틀을 보고 싶으면 `배틀` 버튼을 누르면 창이 열리고 거기서 직접 조작도 가능)
@@ -2421,6 +2528,12 @@ class App:
     def render(self):
         g, s = self.g, self.g.s
         night = False  # 낮/밤은 배경색으로 구분하지 않음 (해·달 아이콘)
+        self.dex_seen_tick()
+        if self.shop_open:
+            if g.battle_running() or g.cfg["mini"]:
+                self.close_shop()
+            else:
+                return
         if g.cfg["mini"]:
             self.draw_scene(self.mini, MINI_W, MINI_H, MINI_FLOOR, 8, mini=True, night=night)
         elif g.battle_running():
@@ -2511,7 +2624,8 @@ class App:
         for key, text, w in (("attack", "공격", 6), ("skill", "스킬", 8), ("guard", "방어", 5),
                              ("potion", "포션", 6), ("flee", "도망", 5), ("auto", "자동", 5)):
             b = mk(row1, text, lambda k=key: g.battle_command(k), w, "#3b82e0" if key == "attack" else BTN)
-            b.pack(side="left", padx=2)
+            if key != "auto":  # [자동] 버튼은 사용자에게 보이지 않음 (입력이 12초 없으면 자동으로 돌아감)
+                b.pack(side="left", padx=2)
             self.bw_btns[key] = b
         row2 = tk.Frame(win, bg=SHELL)
         row2.pack(pady=(1, 6))
@@ -3015,7 +3129,7 @@ class App:
             if h[2] <= 0:
                 self.hearts.remove(h)
             else:
-                c.create_text(h[0], h[1], text=f"♥+{PET_GAIN}", fill="#ff5c8a", font=(FONT, 11, "bold"))
+                c.create_text(h[0], h[1], text="♥", fill="#ff5c8a", font=(FONT, 11, "bold"))
 
         if not mini:
             if g.log and time.time() - g.log[-1][0] < 15:   # 메시지가 나올 때만 아래 줄(어두운 색 100%)을 깔음
@@ -3110,6 +3224,18 @@ class App:
         c.create_rectangle(x - 27, floor - 62, x + 27, floor - 3, fill="#8d949e", outline="")
         c.create_text(x, floor - 45, text="RIP", font=(FONT, 14, "bold"), fill="#3a3f47")
 
+    def dex_seen_tick(self):
+        """도감을 열었다가 닫으면(어느 쪽을 봤든) 새 포켓몬 ✨ 표시를 모두 지움."""
+        g = self.g
+        cur = self.dex_page if (self.page == "dex" and not g.cfg["mini"] and not g.battle_running()
+                                and not self.shop_open) else None
+        if cur != self._dex_prev:
+            if self._dex_prev is not None and cur is None:
+                g.s["new_dex"] = []  # 도감을 열었다가 닫으면 새 포켓몬 ✨ 표시를 모두 지움
+            self._dex_prev, self._dex_t0 = cur, time.time()
+        if "도감" in self.btns:
+            self.btns["도감"].config(text="도감✨" if g.s["new_dex"] else "도감")
+
     def draw_dex(self, c, night):
         """도감 151종(15칸씩 페이지): 포획한 포켓몬은 그림+이름+횟수, 키워 본 포켓몬은 '육성', 아직이면 ???."""
         s = self.g.s
@@ -3138,6 +3264,9 @@ class App:
             else:
                 c.create_text(cx, y0 + 24, text="?", font=(FONT, 16, "bold"), fill="#8896a8")
             c.create_text(cx, y0 + 43, text=KO[sl] if got else "???", font=(FONT, 8, "bold"), fill="#222" if got else "#667")
+            if sl in s.get("new_dex", ()):  # 아직 확인 안 한 새 포켓몬: 반짝이는 표시
+                c.create_text(x0 + cw - 12, y0 + 9, text="✨" if int(time.time() * 2) % 2 else "✦",
+                              font=("Segoe UI Emoji", 11), fill="#ffb400")
             if sl in dex:
                 c.create_text(cx, y0 + 52, text=f"×{dex[sl]}", font=(FONT, 7), fill="#c0392b")
             elif got:
@@ -3172,7 +3301,7 @@ class App:
             f"도감 {sum(1 for k in s['dex'] if k in DEX_ORDER)}/{len(DEX_ORDER)}종 (전투력 +{len(s['dex']) * DEX_POWER:.1f})",
             ("진화: 변함없는 돌 사용 중 (진화 정지)" if s["everstone"] else
              (f"진화: {item_label(s['stone'])} 사용 → 조건이 차면 {KO[STONE_FORM[s['stone']]]}" if s["stone"] else
-              ("진화: 진화의 돌 필요 (불/물/번개의 돌)" if g.needs_stone() else "진화: 정상"))),
+              (("진화: 번개의 돌 필요" if s["slug"] == "pikachu" else "진화: 진화의 돌 필요 (불/물/번개의 돌)") if g.needs_stone() else "진화: 정상"))),
         ]
         if s["happy"] < LOW_BOND:
             lines[1] += "  ⚠ 친밀도 낮음: 전투 -25%"

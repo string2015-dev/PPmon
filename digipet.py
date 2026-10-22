@@ -75,7 +75,8 @@ STAGES = ["알", "기본", "1진화", "2진화"]
 STAGE_TIME = [60, 5 * 3600, 24 * 3600, None]  # 다음 단계까지(초): 알 1분 / 기본→1진화 5시간 / 1진화→2진화 24시간
 HUNGER_EMPTY = [None, 3600, 5400, 7200]  # 배부름 100→0 걸리는 초
 BASE_POWER = [0, 6, 16, 32]
-EXP_NEED = {2: 60, 3: 200}  # 해당 단계로 진화하는 데 필요한 경험치(시간 조건과 함께 충족해야 함)
+EXP_NEED = {2: None, 3: None}  # 진화에 경험치가 필요한 단계(값은 Game.exp_need 가 진화 시간과 연동해 계산)
+EXP_REF_LV = 11  # 수련장 Lv11 로 진화 시간 동안의 자동 배틀을 모두 이기면 시간과 경험치가 함께 채워지도록 맞춤
 
 # 종·타입·상성·진화 계통·희귀도는 species.py (1세대 151종 + 기존 계통에 쓰던 추가 종)
 try:  # 배경 이미지 리사이즈용 (없으면 미리 줄여 둔 사본(sprites/backgrounds)을 씀)
@@ -104,6 +105,8 @@ LOW_BOND = 15      # 친밀도가 이 값 미만이면 전투 불이익(전투�
 # 강적: 일정 확률로 등장하는 매우 강한 상대. 강화(전투력)를 올려야 이길 수 있고, 자동 전투는 승산이 낮으면 도망침
 ELITE_CHANCE = {1: 0.14, 2: 0.2, 3: 0.25}   # 단계별 강적 등장 확률(전설 포켓몬은 항상 강적)
 ELITE_MULT = {1: (1.9, 2.5), 2: (2.0, 2.7), 3: (2.2, 3.0)}  # 강적의 강도 배율
+FOE_E_RANGE = (0.8, 1.6)  # 일반 상대 강도의 무작위 폭 (단계 기본 전투력 × 이 범위)
+FOE_CRIT = (0.12, 1.8)    # 상대 공격의 급소 (확률, 피해 배율)
 ELITE_FLEE_BELOW = 0.8  # 자동 전투에서 (내 전투력 / 상대 전투력)이 이 값 미만이면 도망
 # 돌: 전투 승리/포획 시 일정 확률로 줍는 아이템 (상점에는 없음)
 STONES = {
@@ -148,7 +151,7 @@ AUTO_FEED_COST = 5
 # 영구 강화 {키: (이름, 레벨당 효과 설명, 최대 레벨, 기본 가격, 가격 증가율)} - 환생해도 유지
 UPGRADES = {
     "power": ("근력 단련", "전투력 +1.5 / Lv", 20, 80, 1.35),
-    "exp": ("수련장", "전투 경험치 +8% / Lv", 15, 120, 1.4),
+    "exp": ("수련장", "전투 경험치 +8% / Lv", 12, 120, 1.4),
     "catch": ("포획 연구", "포획률 +6% / Lv", 10, 100, 1.4),
     "tempo": ("전투 훈련소", "자동 배틀 간격 -72초 / Lv", 10, 150, 1.5),
     "income": ("탐험 장비", "자동 Bits 수익 +8% / Lv", 15, 100, 1.4),
@@ -189,8 +192,8 @@ def bg_for_type(typ, names):
 def loss_penalty(res, stage):
     """패배/도망 페널티 (경험치, 성장 시간(초 = 걸음), 친밀도). 도망은 패배의 절반."""
     if res == "fled":
-        return 3 + 2 * stage, 450, 4
-    return 6 + 4 * stage, 900, 8
+        return 3 + 2 * stage, 450, FLEE_BOND_LOSS
+    return 6 + 4 * stage, 900, LOSE_BOND_LOSS
 
 
 def selectable_chain(i):
@@ -214,8 +217,14 @@ def upgrade_effect(key, lv):
             "luck": f"희귀 +{15 * lv}% · 이로치 +{10 * lv}%"}[key]
 
 
-BOND_DRAIN_SEC = 4 * 3600       # 친밀도 100→0 (켜 둔 동안 4시간, 전체/미니 모드 모두). 배고픔/병이면 2배 빠름
-OFFLINE_BOND_SEC = 48 * 3600    # 친밀도 100→0 (프로그램을 꺼 둔 동안 48시간)
+BOND_DRAIN_PER_MIN = 0.7        # 친밀도 감소 (켜 둔 동안, 전체/미니 모드 공통): 분당 0.7
+BOND_DRAIN_SEC = 100 * 60 / BOND_DRAIN_PER_MIN   # 100→0 걸리는 시간(초) ≈ 2시간 23분
+# 켜 둔 동안 감소 배율: (배고픔 20 미만, 병) → 배고픔만 2배 / 병만 4배 / 둘 다 6배
+BOND_DRAIN_MULT = {(False, False): 1, (True, False): 2, (False, True): 4, (True, True): 6}
+TRAIN_BOND_LOSS = 4             # 훈련 1회
+LOSE_BOND_LOSS, FLEE_BOND_LOSS = 16, 3   # 전투 패배 / 도망
+ENERGY_ITEM_BOND_LOSS = 3       # 기력 회복 아이템을 쓸 때
+OFFLINE_BOND_SEC = 72 * 3600    # 친밀도 100→0 (프로그램을 꺼 둔 동안 72시간)
 SNACK_BOND, BENTO_BOND = 8, 4       # 간식 / 도시락으로 오르는 친밀도
 WIN_BOND, CAPTURE_BOND = 2, 0       # 전투 승리 / 포획으로 오르는 친밀도
 PET_GAIN = 1             # 펫을 한 번 클릭할 때 친밀도 증가량
@@ -427,6 +436,9 @@ def sanitize_state(s):
     if s.get("stone") not in (None, "fire_stone", "water_stone", "thunder_stone"):
         s["stone"] = None
     up = s.get("upg") if isinstance(s.get("upg"), dict) else {}
+    for k, v in list(up.items()):  # 최대 레벨이 낮아진 강화: 넘친 레벨의 값을 Bits 로 환불
+        if k in UPGRADES and isinstance(v, int) and not isinstance(v, bool) and v > UPGRADES[k][2]:
+            s["bits"] = float(s.get("bits", 0) or 0) + sum(upgrade_cost(k, lv) for lv in range(UPGRADES[k][2], v))
     s["upg"] = {k: min(UPGRADES[k][2], max(0, int(v))) for k, v in up.items()
                 if k in UPGRADES and isinstance(v, (int, float)) and not isinstance(v, bool)}
     dx = s.get("dex") if isinstance(s.get("dex"), dict) else {}
@@ -596,8 +608,8 @@ class Game:
         nxt = s["stage"] + 1
         parts = [f"{int(left // 3600)}시간 {int(left % 3600 // 60)}분 남음" if left > 0 else "시간 ✔"]
         if nxt in EXP_NEED:
-            have = int(s["exp"])
-            parts.append(f"EXP {have}/{EXP_NEED[nxt]}" + (" ✔" if have >= EXP_NEED[nxt] else ""))
+            have, need_e = int(s["exp"]), self.exp_need(nxt)
+            parts.append(f"EXP {have}/{need_e}" + (" ✔" if have >= need_e else ""))
         if s["everstone"]:
             parts.append("변함없는 돌: 정지")
         elif self.needs_stone():
@@ -643,7 +655,7 @@ class Game:
     def catchup(self, dt):
         full, dt = dt, min(dt, MAX_OFFLINE)
         s = self.s
-        if full > dt and not s["dead"] and s["stage"] > 0:  # 시뮬레이션 상한(8시간)을 넘긴 시간도 친밀도는 48시간 기준으로 반영
+        if full > dt and not s["dead"] and s["stage"] > 0:  # 시뮬레이션 상한(8시간)을 넘긴 시간도 친밀도는 72시간 기준으로 반영
             s["happy"] = max(0.0, s["happy"] - 100 * (full - dt) / OFFLINE_BOND_SEC)
         self.fx_on = False  # 자리를 비운 동안 쓴 아이템은 연출하지 않음
         try:
@@ -705,14 +717,10 @@ class Game:
                     self.use_item(kind, auto=True)
                     break
 
-        if offline:  # 꺼 둔 동안: 48시간에 100→0 (배고픔/병 가중 없음)
+        if offline:  # 꺼 둔 동안: 72시간에 100→0 (배고픔/병 가중 없음)
             drain = 100 * dt / OFFLINE_BOND_SEC
         else:
-            drain = 100 * dt / BOND_DRAIN_SEC
-            if s["hunger"] < 20:
-                drain *= 2
-            if s["sick"]:
-                drain *= 2
+            drain = 100 * dt / BOND_DRAIN_SEC * BOND_DRAIN_MULT[(s["hunger"] < 20, bool(s["sick"]))]
         s["happy"] = max(0.0, s["happy"] - drain)
 
         # 질병 / 굶주림
@@ -765,7 +773,7 @@ class Game:
             if self.cfg["auto_battle"] and st >= 1:
                 s["battle_t"] += dt
                 # 20분마다(꺼 둔 동안은 40분마다), 컨디션이 충분히 좋을 때만. 패배하면 쉬었다가 다음 전투
-                if s["battle_t"] >= max(480, AUTO_BATTLE_EVERY - 72 * self.upg("tempo")) * (2 if offline else 1):
+                if s["battle_t"] >= self.battle_interval() * (2 if offline else 1):
                     if s["hp"] >= 60 and s["hunger"] >= 30 and s["energy"] >= 40:
                         s["battle_t"] = 0
                         self.battle(auto=True, instant=offline)
@@ -899,7 +907,7 @@ class Game:
             need = STAGE_TIME[st]
             if need is None or s["stage_time"] < need:
                 return
-            if s["exp"] < EXP_NEED.get(nxt, 0):
+            if s["exp"] < self.exp_need(nxt):
                 return  # 시간은 찼지만 경험치(전투/훈련)가 더 필요
             if s["everstone"]:
                 return  # 변함없는 돌: 해제하기 전까지 진화하지 않음
@@ -920,7 +928,7 @@ class Game:
                 if s["stone"] != STONE_ONLY[slug]:
                     return
                 s["stone"] = None
-            s["exp"] = max(0.0, s["exp"] - EXP_NEED.get(nxt, 0))  # 초과분은 다음 단계로 이월
+            s["exp"] = max(0.0, s["exp"] - self.exp_need(nxt))  # 초과분은 다음 단계로 이월
             s["slug"] = slug
         s["stage"] = nxt
         s["stage_time"] = 0.0
@@ -984,7 +992,7 @@ class Game:
         s["exp"] += 2
         s["energy"] -= 10
         s["hunger"] = max(0, s["hunger"] - 5)
-        s["happy"] = max(0, s["happy"] - 2)
+        s["happy"] = max(0, s["happy"] - TRAIN_BOND_LOSS)
         s["weight"] = max(1.0, s["weight"] - 0.5)
         self.say(f"{TRAIN_LABEL[key]} 훈련 완료!")
 
@@ -1047,6 +1055,7 @@ class Game:
             if s["energy"] >= 100:
                 return self.say("기력이 가득 차 있다.")
             s["energy"] = min(100.0, s["energy"] + (40 if kind == "energy1" else 100))
+            s["happy"] = max(0.0, s["happy"] - ENERGY_ITEM_BOND_LOSS)   # 억지로 기운을 내서 친밀도가 조금 줄어듦
             if s["sleeping"] and s["energy"] > 20:
                 s["sleeping"] = False  # 기력이 돌아오면 잠에서 깸
         elif kind == "candy":
@@ -1098,8 +1107,9 @@ class Game:
             foe=("강적 " if elite else "") + KO[slug], slug=slug, stage=st, elite=elite, line=random.randrange(4), auto=auto,
             user=user, ball_thrown=False,
             manual=False,                        # 모든 전투는 기본이 자동 (버튼을 누르면 그때부터 직접 조작)
-            P=max(1.0, self.power()), E=(BASE_POWER[st] * random.uniform(0.7, 1.4) + 2) * FOE_POWER.get(slug, 1.0) * emult,
-            pet_hp=100.0, foe_hp=100.0, guard=False, pp=SKILL_PP, pet_types=TYPES.get(s["slug"], ("normal",)),
+            P=max(1.0, self.power()), E=(BASE_POWER[st] * random.uniform(*FOE_E_RANGE) + 2) * FOE_POWER.get(slug, 1.0) * emult,
+            # pet_hp: 현재 체력으로 싸우고, 끝나면 남은 체력이 그대로 반영됨
+            pet_hp=float(s["hp"]), foe_hp=100.0, guard=False, pp=SKILL_PP, pet_types=TYPES.get(s["slug"], ("normal",)),
             foe_types=TYPES.get(slug, ("normal",)), events=[], pending=None, last_input=now,
             auto_tries=0, captured=False, result=None, settled=False, start=now,
             phase="intro", t_next=now + BATTLE_IN, t_choose=now, t_outro=0.0, fail_t=0.0,
@@ -1213,7 +1223,7 @@ class Game:
         """볼을 던져 빗나가도 이어지는 상대 공격 한 번에 쓰러지지 않을 만큼 체력이 남았는가."""
         r = self._ratio(ab)
         mult = type_mult(best_type(ab["foe_types"], ab["pet_types"]), ab["pet_types"])
-        worst = 16 * (1 / r) ** 0.7 * self._eff(mult) * 1.25
+        worst = 16 * (1 / r) ** 0.7 * self._eff(mult) * 1.25 * FOE_CRIT[1]
         return ab["pet_hp"] > worst + 1
 
     def catch_cap(self, ab, dmg):
@@ -1234,6 +1244,8 @@ class Game:
             dur = ANIM
         else:
             dmg = 16 * (1 / r) ** 0.7 * self._eff(mult) * random.uniform(0.75, 1.25)
+            if random.random() < FOE_CRIT[0]:  # 급소: 가끔 강한 한 방 (일반 전투에서도 질 수 있게)
+                dmg *= FOE_CRIT[1]
             kind = "attack"
             if ab["guard"]:
                 dmg, kind = dmg * 0.4, "blocked"
@@ -1356,11 +1368,26 @@ class Game:
         if self.battle_running():
             self._finish_instant()
 
+    def battle_interval(self):
+        """자동 배틀 간격(초): 기본 20분, 전투 훈련소 강화 Lv당 -72초 (최소 8분)."""
+        return max(480, AUTO_BATTLE_EVERY - 72 * self.upg("tempo"))
+
+    def exp_need(self, nxt):
+        """nxt 단계로 진화하는 데 필요한 경험치. 진화 필요 시간 동안 자동 배틀(현재 간격)을 모두 이기고
+        수련장이 Lv11 이면 시간과 경험치가 함께 채워지도록 계산(강적 비율·강적 경험치 2배 포함)."""
+        if nxt not in EXP_NEED:
+            return 0
+        st = nxt - 1
+        battles = STAGE_TIME[st] / self.battle_interval()
+        per_win = (8 + 4 * st) * (1 + 0.08 * EXP_REF_LV) * (1 + ELITE_CHANCE[st])
+        return int(round(battles * per_win))
+
     def exp_gain(self, ab):
-        """전투로 얻는 경험치: 상대가 강할수록 많이, 포획은 1.5배(새 포켓몬 +5), 패배는 소량, 도망은 없음."""
+        """전투로 얻는 경험치: 승리 (8+4×단계)×수련장 보너스, 강적 2배, 포획 1.5배(새 포켓몬 +5), 패배·도망은 없음.
+        (진화 필요 경험치와 정확히 맞도록 상대 강도에 따른 증감은 없앰)"""
         res = ab["result"]
         bonus = (1 + 0.08 * self.upg("exp")) * (2 if ab.get("elite") else 1) * (0.75 if s_happy_low(self.s) else 1)
-        base = (8 + 4 * ab["stage"]) * min(1.5, max(0.7, ab["E"] / ab["P"])) * bonus
+        base = (8 + 4 * ab["stage"]) * bonus
         if res == "win":
             return int(round(base))
         if res == "captured":
@@ -1436,13 +1463,13 @@ class Game:
             return
         ab["settled"] = True
         res, foe, tag = ab["result"], ab["foe"], ""   # 자동/수동 같은 내부 표시는 메시지에 붙이지 않음
+        s["hp"] = max(BATTLE_HP_FLOOR, min(100.0, ab["pet_hp"]))  # 전투에서 남은 체력 반영 (전투로는 죽지 않음)
         gain = self.exp_gain(ab)
         s["exp"] += gain
         exp_txt = f", +{gain} EXP" if gain else ""
         if res in ("win", "captured"):
             s["wins"] += 1
             s["happy"] = min(100, s["happy"] + (CAPTURE_BOND if res == "captured" else WIN_BOND))
-            s["hp"] = max(BATTLE_HP_FLOOR, s["hp"] - (1 if res == "captured" else 2))
             s["train"][random.choice(TRAIN_KEYS)] += 0.5
             reward = ab["reward"] // 2 if res == "captured" else ab["reward"]
             s["bits"] += reward
@@ -1464,7 +1491,6 @@ class Game:
             self.say((f"{tag}{foe}에게서 도망쳤다!" if ab.get("elite") else f"{tag}도망쳤다!") + pen)
         else:
             s["losses"] += 1
-            s["hp"] = max(BATTLE_HP_FLOOR, s["hp"] - 8)  # 전투로는 죽지 않음
             s["battle_t"] = -AUTO_BATTLE_EVERY  # 패배 후엔 자동 배틀을 쉼
             pen = self.apply_loss(res, ab["stage"])
             self.say(f"{tag}{foe}에게 졌다… 쉬어야겠다.{pen}")
@@ -3195,7 +3221,7 @@ class App:
     def exp_shown(self):
         """경험치 글자/막대는 진화할 다음 단계가 있을 때만 보임 (최종 단계·알이면 숨김)."""
         s = self.g.s
-        return s["stage"] > 0 and EXP_NEED.get(s["stage"] + 1) is not None
+        return s["stage"] > 0 and (s["stage"] + 1) in EXP_NEED
 
     def draw_bars(self, c, night):
         s = self.g.s
@@ -3208,8 +3234,8 @@ class App:
             col = "#e0483c" if v < 25 else "#43b36b"
             c.create_rectangle(x, 22, x + 70 * v / 100, 30, fill=col, outline="")
         if self.exp_shown():  # 경험치: 진화 조건(시간과 함께). 최종 단계에서는 숨김
-            need = EXP_NEED.get(s["stage"] + 1)
-            frac = min(1.0, s["exp"] / need)
+            need = self.g.exp_need(s["stage"] + 1)
+            frac = min(1.0, s["exp"] / max(1, need))
             label = f"경험치 {int(s['exp'])}/{need}"
             c.create_text(8, 41, text=label, anchor="w", font=(FONT, 8), fill=fg)
             c.create_rectangle(8, 48, 308, 54, fill="#8896a8" if not night else "#444", outline="")
